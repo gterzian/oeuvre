@@ -60,3 +60,16 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Agent browser
+.build/
+Engine/target/
+formal-web
+formal-web/
+Models/
+*.app
+dist/
+.trajectories/
+
+# Agent browser data: environments, trajectories, adapters
+.data/

@@ -1,0 +1,4 @@
+module CEngine {
+    header "agent_browser_engine.h"
+    export *
+}

@@ -1,0 +1,121 @@
+#!/usr/bin/env node
+// Read the page against the capture grid over CDP: for every cell centre,
+// report the element a click there would reach. formal-web has no
+// `document.elementFromPoint`, so the page-side hit test picks the smallest
+// painted element whose rect contains the point.
+//
+// Usage:
+//   scripts/cells                       # whole grid, one line per row
+//   scripts/cells --expect B5=submit --expect G3=name
+//   scripts/cells --columns 20 --rows 12 --width 1280 --height 720
+
+import { connectCDP } from "./lib.mjs";
+
+const HIT_TEST = `(() => {
+  const describe = (element) => {
+    if (!element) return null;
+    if (element.id) return "#" + element.id;
+    const name = (element.tagName || "?").toLowerCase();
+    const classes = typeof element.className === "string" ? element.className.trim().split(/\\s+/).filter(Boolean) : [];
+    return name + classes.map((className) => "." + className).join("");
+  };
+  const hit = (x, y) => {
+    let best = null;
+    let bestArea = Infinity;
+    for (const element of document.querySelectorAll("body *")) {
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) continue;
+      const area = rect.width * rect.height;
+      if (area <= bestArea) { best = element; bestArea = area; }
+    }
+    return describe(best);
+  };
+  window.__gridHit = hit;
+  window.__gridCell = (column, row, width, height) => hit(
+    column * width + width / 2,
+    row * height + height / 2
+  );
+  return "ready";
+})()`;
+
+const columns = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+  "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
+const expect = [];
+let gridColumns = 20;
+let gridRows = 12;
+let viewportWidth = 1280;
+let viewportHeight = 720;
+let asJSON = false;
+
+for (let index = 2; index < process.argv.length; index += 1) {
+  const argument = process.argv[index];
+  const value = process.argv[index + 1];
+  if (argument === "--expect") {
+    expect.push(value);
+    index += 1;
+  } else if (argument === "--columns") {
+    gridColumns = Number(value);
+    index += 1;
+  } else if (argument === "--rows") {
+    gridRows = Number(value);
+    index += 1;
+  } else if (argument === "--width") {
+    viewportWidth = Number(value);
+    index += 1;
+  } else if (argument === "--height") {
+    viewportHeight = Number(value);
+    index += 1;
+  } else if (argument === "--json") {
+    asJSON = true;
+  } else {
+    console.error(`Unknown argument ${argument}`);
+    process.exit(2);
+  }
+}
+
+const { client, jsEval } = await connectCDP();
+await jsEval(client, HIT_TEST);
+
+const cellWidth = viewportWidth / gridColumns;
+const cellHeight = viewportHeight / gridRows;
+const cells = new Map();
+for (let row = 0; row < gridRows; row += 1) {
+  for (let column = 0; column < gridColumns; column += 1) {
+    const label = `${columns[column]}${row + 1}`;
+    const target = await jsEval(
+      client,
+      `window.__gridCell(${column}, ${row}, ${cellWidth}, ${cellHeight})`
+    );
+    cells.set(label, target);
+  }
+}
+client.close();
+
+const failures = [];
+for (const request of expect) {
+  const [label, fragment] = request.split("=");
+  const target = cells.get(label);
+  if (!target || !target.includes(fragment)) {
+    failures.push(`${label}: expected ${fragment}, found ${target ?? "nothing"}`);
+  }
+}
+
+if (asJSON) {
+  process.stdout.write(`${JSON.stringify({ cells: Object.fromEntries(cells), failures }, null, 2)}\n`);
+} else {
+  for (let row = 0; row < gridRows; row += 1) {
+    const line = [];
+    for (let column = 0; column < gridColumns; column += 1) {
+      const label = `${columns[column]}${row + 1}`;
+      const target = cells.get(label);
+      if (target) line.push(`${label}=${target}`);
+    }
+    if (line.length > 0) process.stdout.write(`${line.join(" ")}\n`);
+  }
+  for (const failure of failures) process.stdout.write(`FAIL ${failure}\n`);
+  if (expect.length > 0 && failures.length === 0) {
+    process.stdout.write(`OK ${expect.join(" ")}\n`);
+  }
+}
+process.exit(failures.length === 0 ? 0 : 1);

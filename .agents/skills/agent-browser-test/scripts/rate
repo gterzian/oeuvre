@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+import { join } from "node:path";
+import { currentRun, parseArgs, writeJSON } from "./lib.mjs";
+
+const parsed = parseArgs(process.argv.slice(2));
+const score = Number(parsed.positional[0]);
+const justification = parsed.positional.slice(1).join(" ").trim();
+if (!Number.isFinite(score) || score < 0 || score > 100 || !justification) {
+  console.error('Usage: scripts/rate <0-100> "<justification>"');
+  process.exit(2);
+}
+const runMeta = await currentRun();
+if (!runMeta?.runDir) {
+  console.error("No run to rate.");
+  process.exit(2);
+}
+const rating = {
+  score,
+  justification,
+  success: score >= 50,
+  ratedAt: new Date().toISOString(),
+  run: runMeta.runDir,
+};
+await writeJSON(join(runMeta.runDir, "rating.json"), rating);
+process.stdout.write(`rated ${score}/100: ${justification}\n`);

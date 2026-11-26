@@ -1,0 +1,70 @@
+#!/usr/bin/env node
+import { access } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  connectCDP,
+  dataRoot,
+  ensureApp,
+  environmentDir,
+  fileURLFor,
+  installTrace,
+  parseArgs,
+  setCurrentRun,
+  siteDir,
+  sleep,
+  waitForPageTarget,
+  writeJSON,
+} from "./lib.mjs";
+
+const parsed = parseArgs(process.argv.slice(2));
+const name = parsed.positional[0];
+if (!name) {
+  console.error("Usage: scripts/launch <name>");
+  process.exit(2);
+}
+const site = siteDir(name);
+try {
+  await access(join(site, "index.html"));
+} catch {
+  console.error(`No site at ${site}/index.html`);
+  process.exit(2);
+}
+
+await installTrace(site);
+const url = fileURLFor(site);
+const app = await ensureApp();
+if (!(await waitForPageTarget())) {
+  console.error("The agent tab did not appear. Check the app log.");
+  process.exit(1);
+}
+
+const { client } = await connectCDP();
+let loaded = false;
+for (let attempt = 0; attempt < 40 && !loaded; attempt += 1) {
+  try {
+    const load = new Promise((resolve) => {
+      const off = client.onEvent("Page.loadEventFired", () => { off(); resolve(); });
+      setTimeout(() => { off(); resolve(); }, 3000);
+    });
+    await client.send("Page.navigate", { url });
+    await load;
+    loaded = true;
+  } catch (error) {
+    if (attempt === 39) throw error;
+    await sleep(250);
+  }
+}
+client.close();
+
+const meta = {
+  name,
+  site,
+  url,
+  siteLabel: name,
+  launchedAt: new Date().toISOString(),
+  appReused: app.reused,
+  dataRoot,
+};
+await writeJSON(join(environmentDir(name), "last-launch.json"), meta);
+await setCurrentRun(meta);
+process.stdout.write(`${url}\n`);
