@@ -1,0 +1,160 @@
+#!/usr/bin/env node
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  connectCDP,
+  currentRun,
+  environmentDir,
+  parseArgs,
+  setCurrentRun,
+  writeJSON,
+} from "./lib.mjs";
+
+const parsed = parseArgs(process.argv.slice(2));
+const name = parsed.positional[0];
+if (!name) {
+  console.error("Usage: scripts/verify <name>");
+  process.exit(2);
+}
+const runMeta = await currentRun();
+if (!runMeta?.runDir) {
+  console.error("No completed run. Run scripts/launch and scripts/prompt first.");
+  process.exit(2);
+}
+const record = JSON.parse(await readFile(join(runMeta.runDir, "record.json"), "utf8"));
+const testPath = join(environmentDir(name), "test.json");
+let test;
+try {
+  test = JSON.parse(await readFile(testPath, "utf8"));
+} catch {
+  console.error(`No test.json at ${testPath}`);
+  process.exit(2);
+}
+let logLines = [];
+try {
+  logLines = (await readFile(join(runMeta.runDir, "app-log.jsonl"), "utf8")).split("\n").filter(Boolean);
+} catch {
+  logLines = [];
+}
+const entries = logLines.map((line, index) => {
+  try {
+    return { line: index + 1, raw: line, ...JSON.parse(line) };
+  } catch {
+    return { line: index + 1, raw: line };
+  }
+});
+
+function matches(entry, name, data) {
+  if (!entry || entry.kind !== "app" || entry.name !== name) return false;
+  if (!data) return true;
+  const actual = entry.data ?? {};
+  return Object.entries(data).every(([key, value]) => JSON.stringify(actual[key]) === JSON.stringify(value));
+}
+
+function findEntry(name, data) {
+  return entries.find((entry) => matches(entry, name, data));
+}
+
+function evaluate(check) {
+  switch (check.kind) {
+    case "entry": {
+      const found = findEntry(check.name, check.data);
+      return { pass: Boolean(found), evidence: found ? [found] : [] };
+    }
+    case "absent": {
+      const found = findEntry(check.name, check.data);
+      const offending = entries.filter((entry) => matches(entry, check.name, check.data));
+      return { pass: !found, evidence: offending };
+    }
+    case "sequence": {
+      let cursor = 0;
+      const evidence = [];
+      for (const name of check.names ?? []) {
+        const found = entries.slice(cursor).find((entry) => matches(entry, name, check.data));
+        if (!found) return { pass: false, evidence };
+        evidence.push(found);
+        cursor = entries.indexOf(found) + 1;
+      }
+      return { pass: true, evidence };
+    }
+    case "value": {
+      const found = [...entries].reverse().find((entry) => matches(entry, check.name, check.data));
+      if (!found) return { pass: false, evidence: [] };
+      const actual = found.data?.[check.field];
+      return {
+        pass: JSON.stringify(actual) === JSON.stringify(check.equals),
+        evidence: [found],
+        actual,
+      };
+    }
+    case "budget": {
+      // A model turn that ends without a tool call still consumes the budget.
+      // Count turns, not only the batches that happened to run actions.
+      const steps = record.turnCount ?? record.stepCount ?? 0;
+      return {
+        pass: steps <= (check.maxSteps ?? 20),
+        evidence: [{ line: 0, raw: `turns ${steps}, budget ${check.maxSteps}` }],
+        actual: steps,
+      };
+    }
+    default:
+      return { pass: false, evidence: [{ line: 0, raw: `unknown check kind ${check.kind}` }] };
+  }
+}
+
+const checks = test.checks ?? [];
+let weighted = 0;
+let totalWeight = 0;
+let requiredFailed = false;
+const results = [];
+for (const check of checks) {
+  const weight = check.weight ?? 1;
+  totalWeight += weight;
+  const outcome = evaluate(check);
+  if (outcome.pass) weighted += weight;
+  if (check.required && !outcome.pass) requiredFailed = true;
+  results.push({ id: check.id, kind: check.kind, weight, required: Boolean(check.required), ...outcome });
+}
+const score = totalWeight > 0 ? weighted / totalWeight : 0;
+const threshold = test.threshold ?? 0.8;
+const verdict = requiredFailed ? "failure" : score >= threshold ? "success" : "partial";
+
+const pointerEvents = entries.filter((entry) =>
+  entry.kind === "event" && (entry.event === "click" || entry.event === "pointerdown")
+);
+const missed = pointerEvents.filter((entry) => !entry.target);
+const pointerMissShare = pointerEvents.length ? missed.length / pointerEvents.length : 0;
+
+const report = {
+  name,
+  verdict,
+  score,
+  threshold,
+  requiredFailed,
+  stepCount: record.stepCount ?? 0,
+  turnCount: record.turnCount ?? 0,
+  timedOut: Boolean(record.timedOut),
+  pointerMissShare,
+  checks: results,
+  record,
+};
+await writeJSON(join(runMeta.runDir, "verify.json"), report);
+
+const out = [];
+out.push(`verify ${name}: ${verdict.toUpperCase()} score ${(score * 100).toFixed(1)}% (threshold ${(threshold * 100).toFixed(0)}%)`);
+out.push(`turns ${report.turnCount}, action batches ${report.stepCount}${report.timedOut ? " (timed out)" : ""}, pointer events on no element ${(pointerMissShare * 100).toFixed(1)}%`);
+for (const result of results) {
+  out.push(
+    `${result.pass ? "PASS" : "FAIL"} ${result.id ?? result.kind} (${result.kind}, weight ${result.weight}${result.required ? ", required" : ""})`
+  );
+  for (const evidence of result.evidence.slice(0, 4)) {
+    out.push(`  log ${evidence.line}: ${evidence.raw}`);
+  }
+}
+out.push(`run: ${runMeta.runDir}`);
+process.stdout.write(out.join("\n") + "\n");
+
+await setCurrentRun({ ...runMeta, verifiedAt: new Date().toISOString(), verdict });
+if (verdict === "failure") process.exit(1);
+if (verdict === "partial") process.exit(2);
+process.exit(0);

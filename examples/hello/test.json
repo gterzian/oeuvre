@@ -1,0 +1,19 @@
+{
+  "threshold": 0.8,
+  "checks": [
+    {
+      "id": "submitted-with-name-and-agreement",
+      "kind": "entry",
+      "name": "submitted",
+      "data": { "name": "Ada", "agree": true },
+      "required": true,
+      "weight": 3
+    },
+    {
+      "id": "short-run",
+      "kind": "budget",
+      "maxSteps": 5,
+      "weight": 1
+    }
+  ]
+}

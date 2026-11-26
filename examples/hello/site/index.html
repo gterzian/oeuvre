@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Hello form</title>
+  <style>
+    body { font: 18px -apple-system, sans-serif; margin: 48px; }
+    label { display: block; margin: 18px 0 6px; }
+    input[type="text"] { width: 360px; padding: 10px; font-size: 18px; }
+    /* The submit button reaches past the centre of cell C5 (x=160) so a click
+       on either B5 or C5 lands on it. */
+    button { margin-top: 22px; padding: 10px 60px; font-size: 18px; }
+    #result { margin-top: 24px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Hello form</h1>
+  <label for="name">Your name</label>
+  <input id="name" type="text" autocomplete="off">
+  <label>
+    <input id="agree" type="checkbox">
+    I agree to the greeting
+  </label>
+  <button id="submit" type="button">Submit</button>
+  <div id="result"></div>
+  <script src="trace.js"></script>
+  <script>
+    const nameInput = document.getElementById("name");
+    const agreeInput = document.getElementById("agree");
+    const result = document.getElementById("result");
+    document.getElementById("submit").addEventListener("click", () => {
+      const name = nameInput.value.trim();
+      const agree = agreeInput.checked;
+      trace("submitted", { name, agree });
+      if (!name) {
+        result.textContent = "Please enter a name.";
+        return;
+      }
+      if (!agree) {
+        result.textContent = "Please agree to the greeting.";
+        return;
+      }
+      result.textContent = `Hello ${name}!`;
+    });
+  </script>
+</body>
+</html>
